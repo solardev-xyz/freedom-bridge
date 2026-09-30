@@ -14,7 +14,7 @@
  * browsers do not send to the web server.
  */
 
-import { createSession, decodeConnectionURL, mqtt, webrtc } from './openlv.esm.js';
+import { createSession, decodeConnectionURL, webrtc } from './openlv.esm.js';
 
 // Only the wallet methods freedom actually tunnels; everything else is
 // refused so a malicious QR cannot turn this page into a generic proxy.
@@ -48,6 +48,15 @@ function fatal(message) {
   box.classList.remove('hidden');
 }
 
+// Human-readable text for an openlv session error: a string reason, or
+// the Error a transport emitted. Trailing period dropped so it can be
+// spliced into a sentence.
+function errorText(err) {
+  if (!err) return '';
+  const text = String(err instanceof Error ? err.message : err).trim();
+  return text.replace(/\.+$/, '');
+}
+
 function logRequest(method, outcome) {
   const item = document.createElement('li');
   item.textContent = `${method} — ${outcome}`;
@@ -62,6 +71,21 @@ function logRequest(method, outcome) {
 // no-op.
 const NEEDS_CONNECTION = new Set(['personal_sign', 'eth_signTypedData_v4', 'eth_sendTransaction']);
 let walletConnected = false;
+
+// Requests handed to the wallet and not yet answered. A disconnect with
+// none pending, after the session connected, is freedom closing the
+// session once its job is done — not a failure.
+let pendingRequests = 0;
+let sessionEnded = false;
+
+// The reasons openlv's webrtc transport gives when the peer closes the
+// channel on purpose (freedom ending the session). A dropped network
+// surfaces differently ("WebRTC connection failed", a relay error, …),
+// so anything else is a failure even between requests.
+// These are openlv-internal strings (not exported by the SDK);
+// test/clean-close-reasons.test.mjs fails if a vendor:openlv refresh
+// stops emitting any of them — run `node --test` after re-vendoring.
+const CLEAN_CLOSE_REASONS = new Set(['Data channel closed', 'WebRTC connection closed']);
 
 async function ensureConnected() {
   if (walletConnected) return;
@@ -78,6 +102,7 @@ async function handleRequest(payload) {
   }
 
   setStatus(`Confirm in your wallet: ${method}`, null);
+  pendingRequests += 1;
   try {
     if (NEEDS_CONNECTION.has(method)) {
       await ensureConnected();
@@ -92,7 +117,9 @@ async function handleRequest(payload) {
     logRequest(method, 'rejected');
     return { error: { code: typeof err?.code === 'number' ? err.code : -32603, message: err?.message || 'Request failed' } };
   } finally {
-    setStatus('Waiting for the next request…', 'done');
+    pendingRequests -= 1;
+    // Don't paper over the session's final status if it ended meanwhile.
+    if (!sessionEnded) setStatus('Waiting for the next request…', 'done');
   }
 }
 
@@ -132,6 +159,8 @@ async function main() {
     fatal('This connection code is invalid. Generate a new QR code in Freedom browser.');
     return;
   }
+  // The vendored bundle only carries the mqtt signaling backend (freedom
+  // only ever mints `p=mqtt` codes).
   if (params.p !== 'mqtt') {
     fatal(`Unsupported signaling protocol "${params.p}".`);
     return;
@@ -139,13 +168,39 @@ async function main() {
 
   try {
     setStatus('Connecting to Freedom browser…', null);
-    const session = await createSession(params, mqtt, [webrtc()], handleRequest);
+    // Since openlv 0.2.0 the signaling layer is not passed in:
+    // createSession loads the backend named by the code's `p`.
+    const session = await createSession(params, [webrtc()], handleRequest);
 
-    session.emitter.on('state_change', (state) => {
-      if (state?.status === 'connected') {
+    // Status is an observable since 0.2.0 (subscribe replays the current
+    // value, then every change).
+    let wasConnected = false;
+    session.status.subscribe((status) => {
+      if (status === 'connected') {
+        wasConnected = true;
         setStatus('Connected — approve requests in your wallet.', 'done');
-      } else if (state?.status === 'disconnected') {
-        setStatus('Disconnected. Scan a new QR code in Freedom browser to reconnect.', 'failed');
+      } else if (status === 'disconnected') {
+        sessionEnded = true;
+        // openlv 0.2.0 reports pairing failures (timeout, no common
+        // transport, signaling error) and dropped connections as a
+        // reason in `session.error`, set just before the status flips.
+        const reason = errorText(session.error.get());
+        if (wasConnected && pendingRequests === 0 && (!reason || CLEAN_CLOSE_REASONS.has(reason))) {
+          // Freedom closes the session after its job; the transport then
+          // reports the close ("Data channel closed") as session.error.
+          // That is the normal end, not a failure.
+          setStatus('Done — you can close this page. Scan a new QR code in Freedom browser for the next request.', 'done');
+          return;
+        }
+        if (wasConnected && pendingRequests === 0 && reason) {
+          // Could be a real drop, or openlv rewording its clean-close
+          // message — leave a trace for whoever debugs the red status.
+          console.warn('[Bridge] disconnect reason not in CLEAN_CLOSE_REASONS:', reason);
+        }
+        setStatus(
+          `Disconnected${reason ? `: ${reason}` : ''}. Scan a new QR code in Freedom browser to reconnect.`,
+          'failed',
+        );
       }
     });
 
