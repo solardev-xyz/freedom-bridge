@@ -82,6 +82,9 @@ let sessionEnded = false;
 // channel on purpose (freedom ending the session). A dropped network
 // surfaces differently ("WebRTC connection failed", a relay error, …),
 // so anything else is a failure even between requests.
+// These are openlv-internal strings (not exported by the SDK);
+// test/clean-close-reasons.test.mjs fails if a vendor:openlv refresh
+// stops emitting any of them — run `node --test` after re-vendoring.
 const CLEAN_CLOSE_REASONS = new Set(['Data channel closed', 'WebRTC connection closed']);
 
 async function ensureConnected() {
@@ -188,6 +191,11 @@ async function main() {
           // That is the normal end, not a failure.
           setStatus('Done — you can close this page. Scan a new QR code in Freedom browser for the next request.', 'done');
           return;
+        }
+        if (wasConnected && pendingRequests === 0 && reason) {
+          // Could be a real drop, or openlv rewording its clean-close
+          // message — leave a trace for whoever debugs the red status.
+          console.warn('[Bridge] disconnect reason not in CLEAN_CLOSE_REASONS:', reason);
         }
         setStatus(
           `Disconnected${reason ? `: ${reason}` : ''}. Scan a new QR code in Freedom browser to reconnect.`,

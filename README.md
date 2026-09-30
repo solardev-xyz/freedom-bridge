@@ -35,6 +35,11 @@ Serve locally from a sibling `freedom-browser` checkout:
 drives this page in Chromium with a fake `window.ethereum` as the
 "phone".
 
+`node --test` (Node 18+, no dependencies) checks that the openlv
+disconnect messages `bridge.js` treats as a clean end of session
+(`CLEAN_CLOSE_REASONS`) are still emitted by the vendored bundle. Run
+it after every `vendor:openlv` refresh.
+
 ## Deployment
 
 Deployed as a Swarm site behind an ENS name (interim origin:
