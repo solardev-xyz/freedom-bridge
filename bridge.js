@@ -14,7 +14,7 @@
  * browsers do not send to the web server.
  */
 
-import { createSession, decodeConnectionURL, mqtt, webrtc } from './openlv.esm.js';
+import { createSession, decodeConnectionURL, webrtc } from './openlv.esm.js';
 
 // Only the wallet methods freedom actually tunnels; everything else is
 // refused so a malicious QR cannot turn this page into a generic proxy.
@@ -132,6 +132,8 @@ async function main() {
     fatal('This connection code is invalid. Generate a new QR code in Freedom browser.');
     return;
   }
+  // The vendored bundle only carries the mqtt signaling backend (freedom
+  // only ever mints `p=mqtt` codes).
   if (params.p !== 'mqtt') {
     fatal(`Unsupported signaling protocol "${params.p}".`);
     return;
@@ -139,12 +141,16 @@ async function main() {
 
   try {
     setStatus('Connecting to Freedom browser…', null);
-    const session = await createSession(params, mqtt, [webrtc()], handleRequest);
+    // Since openlv 0.2.0 the signaling layer is not passed in:
+    // createSession loads the backend named by the code's `p`.
+    const session = await createSession(params, [webrtc()], handleRequest);
 
-    session.emitter.on('state_change', (state) => {
-      if (state?.status === 'connected') {
+    // Status is an observable since 0.2.0 (subscribe replays the current
+    // value, then every change).
+    session.status.subscribe((status) => {
+      if (status === 'connected') {
         setStatus('Connected — approve requests in your wallet.', 'done');
-      } else if (state?.status === 'disconnected') {
+      } else if (status === 'disconnected') {
         setStatus('Disconnected. Scan a new QR code in Freedom browser to reconnect.', 'failed');
       }
     });
