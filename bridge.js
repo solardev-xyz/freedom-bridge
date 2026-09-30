@@ -72,6 +72,12 @@ function logRequest(method, outcome) {
 const NEEDS_CONNECTION = new Set(['personal_sign', 'eth_signTypedData_v4', 'eth_sendTransaction']);
 let walletConnected = false;
 
+// Requests handed to the wallet and not yet answered. A disconnect with
+// none pending, after the session connected, is freedom closing the
+// session once its job is done — not a failure.
+let pendingRequests = 0;
+let sessionEnded = false;
+
 async function ensureConnected() {
   if (walletConnected) return;
   setStatus('Connect your wallet to continue…', null);
@@ -87,6 +93,7 @@ async function handleRequest(payload) {
   }
 
   setStatus(`Confirm in your wallet: ${method}`, null);
+  pendingRequests += 1;
   try {
     if (NEEDS_CONNECTION.has(method)) {
       await ensureConnected();
@@ -101,7 +108,9 @@ async function handleRequest(payload) {
     logRequest(method, 'rejected');
     return { error: { code: typeof err?.code === 'number' ? err.code : -32603, message: err?.message || 'Request failed' } };
   } finally {
-    setStatus('Waiting for the next request…', 'done');
+    pendingRequests -= 1;
+    // Don't paper over the session's final status if it ended meanwhile.
+    if (!sessionEnded) setStatus('Waiting for the next request…', 'done');
   }
 }
 
@@ -156,13 +165,24 @@ async function main() {
 
     // Status is an observable since 0.2.0 (subscribe replays the current
     // value, then every change).
+    let wasConnected = false;
     session.status.subscribe((status) => {
       if (status === 'connected') {
+        wasConnected = true;
         setStatus('Connected — approve requests in your wallet.', 'done');
       } else if (status === 'disconnected') {
+        sessionEnded = true;
+        if (wasConnected && pendingRequests === 0) {
+          // Freedom closes the session after its job; the transport then
+          // reports the close ("Data channel closed") as session.error.
+          // That is the normal end, not a failure.
+          setStatus('Done — you can close this page. Scan a new QR code in Freedom browser for the next request.', 'done');
+          return;
+        }
         // openlv 0.2.0 reports pairing failures (timeout, no common
-        // transport, signaling error) as a reason in `session.error`,
-        // set just before the status flips — surface it.
+        // transport, signaling error) and dropped connections as a
+        // reason in `session.error`, set just before the status flips —
+        // surface it.
         const reason = errorText(session.error.get());
         setStatus(
           `Disconnected${reason ? `: ${reason}` : ''}. Scan a new QR code in Freedom browser to reconnect.`,
