@@ -48,6 +48,15 @@ function fatal(message) {
   box.classList.remove('hidden');
 }
 
+// Human-readable text for an openlv session error: a string reason, or
+// the Error a transport emitted. Trailing period dropped so it can be
+// spliced into a sentence.
+function errorText(err) {
+  if (!err) return '';
+  const text = String(err instanceof Error ? err.message : err).trim();
+  return text.replace(/\.+$/, '');
+}
+
 function logRequest(method, outcome) {
   const item = document.createElement('li');
   item.textContent = `${method} — ${outcome}`;
@@ -151,7 +160,14 @@ async function main() {
       if (status === 'connected') {
         setStatus('Connected — approve requests in your wallet.', 'done');
       } else if (status === 'disconnected') {
-        setStatus('Disconnected. Scan a new QR code in Freedom browser to reconnect.', 'failed');
+        // openlv 0.2.0 reports pairing failures (timeout, no common
+        // transport, signaling error) as a reason in `session.error`,
+        // set just before the status flips — surface it.
+        const reason = errorText(session.error.get());
+        setStatus(
+          `Disconnected${reason ? `: ${reason}` : ''}. Scan a new QR code in Freedom browser to reconnect.`,
+          'failed',
+        );
       }
     });
 
