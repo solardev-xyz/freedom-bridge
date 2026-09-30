@@ -78,6 +78,12 @@ let walletConnected = false;
 let pendingRequests = 0;
 let sessionEnded = false;
 
+// The reasons openlv's webrtc transport gives when the peer closes the
+// channel on purpose (freedom ending the session). A dropped network
+// surfaces differently ("WebRTC connection failed", a relay error, …),
+// so anything else is a failure even between requests.
+const CLEAN_CLOSE_REASONS = new Set(['Data channel closed', 'WebRTC connection closed']);
+
 async function ensureConnected() {
   if (walletConnected) return;
   setStatus('Connect your wallet to continue…', null);
@@ -172,18 +178,17 @@ async function main() {
         setStatus('Connected — approve requests in your wallet.', 'done');
       } else if (status === 'disconnected') {
         sessionEnded = true;
-        if (wasConnected && pendingRequests === 0) {
+        // openlv 0.2.0 reports pairing failures (timeout, no common
+        // transport, signaling error) and dropped connections as a
+        // reason in `session.error`, set just before the status flips.
+        const reason = errorText(session.error.get());
+        if (wasConnected && pendingRequests === 0 && (!reason || CLEAN_CLOSE_REASONS.has(reason))) {
           // Freedom closes the session after its job; the transport then
           // reports the close ("Data channel closed") as session.error.
           // That is the normal end, not a failure.
           setStatus('Done — you can close this page. Scan a new QR code in Freedom browser for the next request.', 'done');
           return;
         }
-        // openlv 0.2.0 reports pairing failures (timeout, no common
-        // transport, signaling error) and dropped connections as a
-        // reason in `session.error`, set just before the status flips —
-        // surface it.
-        const reason = errorText(session.error.get());
         setStatus(
           `Disconnected${reason ? `: ${reason}` : ''}. Scan a new QR code in Freedom browser to reconnect.`,
           'failed',
